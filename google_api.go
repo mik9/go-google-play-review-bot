@@ -73,8 +73,10 @@ func (r userReview) format() string {
 
 func sdkIntToString(sdkInt int) string {
 	switch sdkInt {
+	case 29:
+		return "10"
 	case 28:
-		return "9.0"
+		return "9"
 	case 27:
 		return "8.1"
 	case 26:
@@ -84,7 +86,7 @@ func sdkIntToString(sdkInt int) string {
 	case 24:
 		return "7.0"
 	case 23:
-		return "6.0"
+		return "6"
 	case 22:
 		return "5.1"
 	case 21:
@@ -194,7 +196,6 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 		}
 
 		handleSingleComment(app, r, c, respChannel)
-
 	}
 
 	var nextToken string
