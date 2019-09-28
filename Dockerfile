@@ -1,10 +1,15 @@
-FROM golang:alpine
+FROM golang:alpine AS builder
 
+RUN apk add --no-cache git
+
+COPY . /go/src/google-play-review-bot/
+RUN cd /go/src/google-play-review-bot && go get -d ./... && go build -o /usr/app/bot
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
 STOPSIGNAL SIGKILL
-ENTRYPOINT /usr/app/bot
+ENTRYPOINT /app
 EXPOSE 8443
 ENV GOPATH="/usr/app/"
 
-COPY . /usr/app/src/google-play-review-bot/
-RUN apk add --no-cache git
-RUN cd /usr/app/src/google-play-review-bot && go get && go build -o /usr/app/bot && rm -r /usr/app/src && apk del git
+COPY --from=builder /usr/app/bot /app
