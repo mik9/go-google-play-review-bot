@@ -1,21 +1,22 @@
 package main
 
 import (
-	"golang.org/x/oauth2/google"
-	"golang.org/x/net/context"
-	"google.golang.org/api/androidpublisher/v3"
-	"google-play-review-bot/utils"
-	"fmt"
-	"github.com/globalsign/mgo"
-	"gopkg.in/telegram-bot-api.v4"
-	"google-play-review-bot/collections"
-	"github.com/globalsign/mgo/bson"
-	"google-play-review-bot/handlers"
-	"time"
 	"bytes"
+	"fmt"
+	"google-play-review-bot/collections"
+	"google-play-review-bot/handlers"
+	"google-play-review-bot/scheduler"
+	"google-play-review-bot/utils"
 	"log"
-	"github.com/jasonlvhit/gocron"
+	"time"
+
 	"github.com/bugsnag/bugsnag-go"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	"golang.org/x/net/context"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/androidpublisher/v3"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 type userReview struct {
@@ -253,13 +254,14 @@ func observeApps(db *mgo.Database, respChannel chan tgbotapi.Chattable, appColle
 	}
 }
 
-var scheduler = gocron.NewScheduler()
+var _scheduler = scheduler.NewScheduler()
 
 func reschedule(db *mgo.Database, apps []handlers.Application, respChannel chan tgbotapi.Chattable) {
-	scheduler.Clear()
+	_scheduler.Clear()
 	for _, app := range apps {
-		scheduler.Every(10).Minutes().Do(requestReviews, db, app, respChannel)
+		_app := app
+		_scheduler.Schedule(func() {
+			requestReviews(db, _app, respChannel)
+		}, 10*time.Minute)
 	}
-	scheduler.RunAllwithDelay(1000)
-	scheduler.Start()
 }
