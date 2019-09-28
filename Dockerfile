@@ -1,9 +1,12 @@
 FROM golang:alpine AS builder
 
 RUN apk add --no-cache git
+WORKDIR /src/google-play-review-bot/
 
-COPY . /go/src/google-play-review-bot/
-RUN cd /go/src/google-play-review-bot && go get -d ./... && go build -o /usr/app/bot
+COPY go.mod go.sum /src/google-play-review-bot/
+RUN go mod download
+COPY . /src/google-play-review-bot/
+RUN go build -o /usr/app/bot
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
