@@ -1,20 +1,21 @@
 package main
 
 import (
-	"github.com/globalsign/mgo"
 	"fmt"
-	"os"
-	"gopkg.in/telegram-bot-api.v4"
-	"log"
-	"google-play-review-bot/handlers"
 	"google-play-review-bot/collections"
-	"runtime/debug"
-	"net/http"
+	"google-play-review-bot/handlers"
 	"google-play-review-bot/utils"
-	"strings"
-	"github.com/globalsign/mgo/bson"
-	"github.com/bugsnag/bugsnag-go"
+	"log"
+	"net/http"
+	"os"
 	"reflect"
+	"runtime/debug"
+	"strings"
+
+	"github.com/bugsnag/bugsnag-go"
+	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 var BotToken = os.Getenv("TELEGRAM_TOKEN")
@@ -51,7 +52,8 @@ func runBot(db *mgo.Database, respChannel chan tgbotapi.Chattable, appChanges ch
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	var updateChannel tgbotapi.UpdatesChannel
-	tlsCert, useWebhook := os.LookupEnv("TLS_CERT")
+	tlsCert := os.Getenv("TLS_CERT")
+	_, useWebhook := os.LookupEnv("USE_WEBHOOK")
 	if useWebhook {
 		log.Printf("Using webhook")
 
@@ -60,7 +62,13 @@ func runBot(db *mgo.Database, respChannel chan tgbotapi.Chattable, appChanges ch
 
 		bot.SetWebhook(tgbotapi.NewWebhook(webHookUrl + "/" + bot.Token))
 		updateChannel = bot.ListenForWebhook("/" + bot.Token)
-		go http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil)
+		if tlsCert != "" {
+			log.Printf("Using https")
+			go http.ListenAndServeTLS(":8443", tlsCert, tlsKey, nil)
+		} else {
+			log.Printf("Using http")
+			go http.ListenAndServe(":8443", nil)
+		}
 	} else {
 		log.Printf("Using getUpdate")
 		u := tgbotapi.NewUpdate(0)
