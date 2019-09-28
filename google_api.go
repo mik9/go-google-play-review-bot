@@ -113,7 +113,7 @@ func sdkIntToString(sdkInt int) string {
 
 func requestReviews(db *mgo.Database, app handlers.Application, respChannel chan tgbotapi.Chattable) {
 	defer bugsnag.AutoNotify()
-	log.Printf("requestReviews: %s", app.PackageName)
+	log.Printf("[%s] requestReviews", app.PackageName)
 
 	err := db.C(collections.APPS).FindId(app.ID).One(&app)
 	if err != nil {
@@ -165,7 +165,7 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 	app handlers.Application,
 	respChannel chan tgbotapi.Chattable) (bool, error, *time.Time, string) {
 
-	log.Printf("handlePage")
+	log.Printf("handlePage [%s]", app.PackageName)
 
 	reviewListCall := reviewService.List(app.PackageName)
 	reviewListCall.TranslationLanguage(app.TranslateLanguage)
@@ -177,13 +177,14 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 	if err != nil {
 		return false, err, nil, ""
 	}
+	log.Printf("handlePage [%s] review count: %d", app.PackageName, len(reviewList.Reviews))
 	var newestReview time.Time
 	for i, r := range reviewList.Reviews {
 		c := r.Comments[0].UserComment
 		reviewTime := time.Unix(c.LastModified.Seconds, c.LastModified.Nanos)
 
 		if reviewTime.Before(app.LastReview) || reviewTime.Equal(app.LastReview) {
-			log.Printf("Review is older that last time")
+			log.Printf("handlePage [%s]: Review is older that last time", app.PackageName)
 			return false, nil, &newestReview, ""
 		}
 
@@ -192,7 +193,7 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 		}
 
 		if app.LastReview.IsZero() && i > 0 {
-			log.Printf("No reviewTime, allow only one review")
+			log.Printf("handlePage [%s] No reviewTime, allow only one review", app.PackageName)
 			return false, nil, &newestReview, ""
 		}
 
@@ -231,8 +232,6 @@ func handleSingleComment(app handlers.Application,
 		AppBuildNumber: c.AppVersionCode,
 		AppName:        app.GetName(),
 	}
-
-	fmt.Printf("%+v\n", review)
 
 	respChannel <- tgbotapi.NewMessage(app.ChatId, review.format())
 }
