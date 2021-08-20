@@ -1,21 +1,24 @@
 package handlers
 
 import (
-	"github.com/globalsign/mgo/bson"
 	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type Application struct {
-	ChatId             int64         `bson:",omitempty"`
-	UserId             int           `bson:",omitempty"`
-	ID                 bson.ObjectId `bson:"_id,omitempty"`
-	PackageName        string
-	Name               string        `bson:",omitempty"`
-	KeyFile            []byte        `bson:",omitempty"`
-	LastReviewsQueried *time.Time    `bson:",omitempty"`
-	LastReview         time.Time     `bson:",omitempty"`
-	TranslateLanguage  string
+	ChatId              int64              `bson:",omitempty"`
+	UserId              int                `bson:",omitempty"`
+	ID                  primitive.ObjectID `bson:"_id,omitempty"`
+	PackageName         string
+	AppStoreCountryCode string     `bson:"appStoreCountryCode,omitempty"`
+	Name                string     `bson:",omitempty"`
+	KeyFile             []byte     `bson:",omitempty"`
+	LastReviewsQueried  *time.Time `bson:",omitempty"`
+	LastReview          time.Time  `bson:",omitempty"`
+	LastReviewId        string     `bson:",omitempty"`
+	TranslateLanguage   string
 }
 
 func (a Application) GetName() string {
@@ -27,11 +30,11 @@ func (a Application) GetName() string {
 }
 
 type Chat struct {
-	ChatId     int64         `bson:",omitempty"`
-	UserId     int           `bson:",omitempty"`
-	ID         bson.ObjectId `bson:"_id,omitempty"`
-	State      int           `bson:",omitempty"`
-	CustomData interface{}   `bson:",omitempty"`
+	ChatId     int64              `bson:",omitempty"`
+	UserId     int                `bson:",omitempty"`
+	ID         primitive.ObjectID `bson:"_id,omitempty"`
+	State      int                `bson:",omitempty"`
+	CustomData interface{}        `bson:",omitempty"`
 }
 
 const (
@@ -41,6 +44,9 @@ const (
 	ChatStateWaitForApp         = 3
 	ChatStateWaitForLanguage    = 4
 	ChatStateWaitForAppName     = 5
+	ChatStateWaitForOS          = 6
+	ChatStateWaitForIosAppID    = 7
+	ChangeAppStoreWaitForCode   = 8
 )
 
 func ChatStateToWaitingString(state int) string {
@@ -57,7 +63,14 @@ func ChatStateToWaitingString(state int) string {
 		return "language code"
 	case ChatStateWaitForAppName:
 		return "application name"
+	case ChatStateWaitForOS:
+		return "os selection"
+	case ChatStateWaitForIosAppID:
+		return "ios app id"
+	case ChangeAppStoreWaitForCode:
+		return "AppStore code"
 	}
+
 	panic(UnknownStateError{state: state})
 }
 
@@ -74,9 +87,11 @@ const (
 	ChatStateCallChangeGroupReceiver = -1
 )
 
-func ChatStateCall(state int, ctx Context) {
+func ChatStateCall(state int, botUserName string, ctx Context) {
 	switch state {
 	case ChatStateCallChangeGroupReceiver:
-		ChangeGroupReceiver{}.Handle(ctx)
+		ChangeGroupReceiver{
+			BotUserName: botUserName,
+		}.Handle(ctx)
 	}
 }

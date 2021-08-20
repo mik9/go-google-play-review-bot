@@ -1,16 +1,19 @@
 package handlers
 
 import (
-	"gopkg.in/telegram-bot-api.v4"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
-	"google-play-review-bot/collections"
 	"fmt"
+	"google-play-review-bot/collections"
+	"google-play-review-bot/datastore"
 	"google-play-review-bot/utils"
-	"strings"
 	"io"
-	"net/http"
 	"log"
+	"net/http"
+	"strings"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 type Handler interface {
@@ -22,7 +25,7 @@ type Context struct {
 	Update     tgbotapi.Update
 	Resp       chan tgbotapi.Chattable
 	AppChanges chan int
-	Db         *mgo.Database
+	Store      *datastore.Datastore
 	Bot        *tgbotapi.BotAPI
 }
 
@@ -43,7 +46,6 @@ func (ctx Context) SafeChatId() int64 {
 	return 0
 }
 
-
 func (ctx Context) ChatId() int64 {
 	chatId := ctx.SafeChatId()
 	if chatId == 0 {
@@ -63,16 +65,22 @@ func (ctx Context) UserId() int {
 	panic("don't know where to get user id")
 }
 
-func (ctx Context) EnsureChatState(state int) (bool, Chat) {
-	chatCollection := ctx.Db.C(collections.CHAT)
+func (ctx Context) EnsureChatState(state int) (bool, *Chat) {
+	chatCollection := ctx.Store.DB().Collection(collections.CHAT)
 
 	chat := Chat{}
-	err := chatCollection.Find(bson.M{
+	r := chatCollection.FindOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
-	}).One(&chat)
+	})
 
-	return err == nil && chat.State == state, chat
+	if err := r.Err(); err != nil {
+		return false, nil
+	}
+
+	err := r.Decode(&chat)
+
+	return err == nil && chat.State == state, &chat
 }
 
 func (ctx Context) ChangeChatState(newState int) error {
@@ -80,9 +88,7 @@ func (ctx Context) ChangeChatState(newState int) error {
 }
 
 func (ctx Context) ChangeChatStateWithNextState(newState int, nextState int) error {
-	chatCollection := ctx.Db.C(collections.CHAT)
-
-	err := chatCollection.Update(bson.M{
+	_, err := ctx.Store.DB().Collection(collections.CHAT).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
 	}, bson.M{
@@ -101,9 +107,8 @@ func (ctx Context) ChangeChatStateOrAnswerDefault(newState int) bool {
 
 func (ctx Context) ChangeChatStateWithNextStateOrAnswerDefault(newState int, nextState int) bool {
 	log.Printf("chatid = %d, userid = %d", ctx.ChatId(), ctx.UserId())
-	chatCollection := ctx.Db.C(collections.CHAT)
 
-	info, err := chatCollection.Upsert(bson.M{
+	info, err := ctx.Store.DB().Collection(collections.CHAT).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
 		"state":  ChatStateNone,
@@ -112,20 +117,21 @@ func (ctx Context) ChangeChatStateWithNextStateOrAnswerDefault(newState int, nex
 			"state":      newState,
 			"customdata": nextState,
 		},
-	})
+	}, options.Update().SetUpsert(true))
 
 	utils.LogError(err)
 	utils.LogStruct(info)
 
 	// err = when chat already exists and state not match
-	if err == nil && (info.Updated != 0 || info.UpsertedId != nil || info.Matched != 0) {
+	if err == nil && (info.ModifiedCount != 0 || info.UpsertedID != nil || info.MatchedCount != 0) {
 		return true
 	}
+
 	var partialChat struct{ State int }
-	chatCollection.Find(bson.M{
+	ctx.Store.DB().Collection(collections.CHAT).FindOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
-	}).Select(bson.M{"state": 1}).One(&partialChat)
+	}, options.FindOne().SetProjection(bson.M{"state": 1})).Decode(&partialChat)
 
 	if partialChat.State == newState {
 		return true
@@ -154,7 +160,7 @@ func (ctx Context) downloadFile(fileId string) (io.ReadCloser, error) {
 }
 
 func (ctx Context) SetKeyFile(buf []byte) {
-	ctx.Db.C(collections.APPS).Update(bson.M{
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
 		"keyfile": bson.M{
@@ -166,11 +172,13 @@ func (ctx Context) SetKeyFile(buf []byte) {
 		},
 	})
 
+	utils.PanicOnError(err)
+
 	ctx.AppChanges <- 0
 }
 
 func (ctx Context) MigrateChatId(oldId int64, newId int64) {
-	err := ctx.Db.C(collections.CHAT).Update(bson.M{
+	_, err := ctx.Store.DB().Collection(collections.CHAT).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": oldId,
 	}, bson.M{
 		"$set": bson.M{
@@ -181,7 +189,7 @@ func (ctx Context) MigrateChatId(oldId int64, newId int64) {
 		utils.LogError(err)
 	}
 
-	err = ctx.Db.C(collections.APPS).Update(bson.M{
+	_, err = ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": oldId,
 	}, bson.M{
 		"$set": bson.M{
@@ -193,8 +201,8 @@ func (ctx Context) MigrateChatId(oldId int64, newId int64) {
 	}
 }
 
-func (ctx Context) BindAppToChatId(appId bson.ObjectId, chatId int64)  {
-	err := ctx.Db.C(collections.APPS).Update(bson.M{
+func (ctx Context) BindAppToChatId(appId primitive.ObjectID, chatId int64) {
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{
 		"_id": appId,
 		"chatid": bson.M{
 			"$exists": false,
@@ -204,12 +212,40 @@ func (ctx Context) BindAppToChatId(appId bson.ObjectId, chatId int64)  {
 			"chatid": chatId,
 		},
 		"$unset": bson.M{
-			"lastreview": 1,
+			"lastreview":   1,
+			"lastreviewid": 1,
 		},
 	})
-	if err != nil {
-		panic(err)
-	}
+	utils.PanicOnError(err)
+	log.Printf("[BindAppToChatId] appId: %v, chatId: %v", appId, chatId)
 
 	ctx.AppChanges <- 1
+}
+
+func (ctx Context) SaveOS(os string) primitive.ObjectID {
+	res, err := ctx.Store.DB().Collection(collections.APPS).InsertOne(ctx.Store.Context, bson.M{
+		"chatid":              ctx.ChatId(),
+		"userid":              ctx.UserId(),
+		"os":                  os,
+		"translatelanguage":   "en",
+		"appStoreCountryCode": "us",
+	})
+	utils.PanicOnError(err)
+
+	return res.InsertedID.(primitive.ObjectID)
+}
+
+func (ctx Context) SavePackageName(packageName string) error {
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{
+		"chatid": ctx.ChatId(),
+		"userid": ctx.UserId(),
+		"packagename": bson.M{
+			"$exists": false,
+		},
+	}, bson.M{
+		"$set": bson.M{
+			"packagename": packageName,
+		},
+	})
+	return err
 }

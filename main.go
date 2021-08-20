@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"google-play-review-bot/collections"
+	"google-play-review-bot/datastore"
 	"google-play-review-bot/handlers"
 	"google-play-review-bot/utils"
 	"log"
@@ -13,52 +13,57 @@ import (
 	"strings"
 
 	"github.com/bugsnag/bugsnag-go"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 var BotToken = os.Getenv("TELEGRAM_TOKEN")
 
-var Handlers = []handlers.Handler{
-	handlers.EditMessageConsumer{}, // we don't handle edit message events
-	handlers.Reset{},
-	handlers.MigrateHandler{},
-	handlers.StartHandler{},
+var Handlers []handlers.Handler
 
-	handlers.NewAppHandler{},
-	handlers.PackageNameReceiver{},
-	handlers.KeyReceiver{},
-	handlers.AppList{},
+func initHandlers(botUserName string) {
+	Handlers = []handlers.Handler{
+		handlers.EditMessageConsumer{}, // we don't handle edit message events
+		handlers.Reset{},
+		handlers.MigrateHandler{},
+		handlers.StartHandler{},
 
-	handlers.ChangeLanguage{},
-	handlers.ChangeLanguageReceiver{},
-	handlers.ChangeAppName{},
-	handlers.ChangeAppNameReceiver{},
-	handlers.ChangeGroup{},
-	handlers.ChangeGroupPrivateReceiver{},
-	handlers.ChooseAppReceiver{},
+		handlers.NewAppHandler{},
+		handlers.IosAndroidHandler{},
+		handlers.PackageNameReceiver{},
+		handlers.KeyReceiver{},
+		handlers.AppList{},
 
-	//handlers.DefaultHandler{},
+		handlers.ChangeLanguage{},
+		handlers.ChangeLanguageReceiver{},
+		handlers.ChangeAppName{},
+		handlers.ChangeAppNameReceiver{},
+		handlers.ChangeGroup{},
+		handlers.ChangeGroupPrivateReceiver{},
+		handlers.ChooseAppReceiver{
+			BotUserName: botUserName,
+		},
+		handlers.ChangeAppStore{},
+		handlers.ChangeAppStoreReceiver{},
+
+		//handlers.DefaultHandler{},
+	}
 }
 
-func runBot(db *mgo.Database, respChannel chan tgbotapi.Chattable, appChanges chan int) {
+func runBot(respChannel chan tgbotapi.Chattable, appChanges chan int) {
 	bot, err := tgbotapi.NewBotAPI(BotToken)
-	if err != nil {
-		panic(err)
-	}
-	//bot.Debug = true
+	utils.PanicOnError(err)
+	// bot.Debug = true
 
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	var updateChannel tgbotapi.UpdatesChannel
-	tlsCert := os.Getenv("TLS_CERT")
-	_, useWebhook := os.LookupEnv("USE_WEBHOOK")
+	webHookUrl, useWebhook := os.LookupEnv("WEBHOOK_URL")
 	if useWebhook {
 		log.Printf("Using webhook")
 
+		tlsCert := os.Getenv("TLS_CERT")
 		tlsKey := os.Getenv("TLS_KEY")
-		webHookUrl := os.Getenv("WEBHOOK_URL")
 
 		bot.SetWebhook(tgbotapi.NewWebhook(webHookUrl + "/" + bot.Token))
 		updateChannel = bot.ListenForWebhook("/" + bot.Token)
@@ -73,18 +78,26 @@ func runBot(db *mgo.Database, respChannel chan tgbotapi.Chattable, appChanges ch
 		log.Printf("Using getUpdate")
 		u := tgbotapi.NewUpdate(0)
 		u.Timeout = 600
-		updateChannel, _ = bot.GetUpdatesChan(u)
+		updateChannel, err = bot.GetUpdatesChan(u)
+		utils.PanicOnError(err)
 	}
+
+	botInfo, err := bot.GetMe()
+	utils.PanicOnError(err)
+
+	log.Printf("Bot name: %s", botInfo.UserName)
+
+	initHandlers(botInfo.UserName)
 
 	for {
 		select {
 		case update := <-updateChannel:
-			//go logMessage(db, update)
-			go runHandlers(update, respChannel, db, bot, appChanges)
+			go logMessage(update)
+			go runHandlers(update, respChannel, bot, appChanges)
 		case resp := <-respChannel:
 			_, e := bot.Send(resp)
 			if te, ok := e.(tgbotapi.Error); ok && strings.Contains(te.Message, "Forbidden") {
-				dropChat(db, resp.(tgbotapi.MessageConfig).ChatID)
+				dropChat(resp.(tgbotapi.MessageConfig).ChatID)
 			} else {
 				utils.LogError(e)
 			}
@@ -92,29 +105,39 @@ func runBot(db *mgo.Database, respChannel chan tgbotapi.Chattable, appChanges ch
 	}
 }
 
-func dropChat(db *mgo.Database, id int64) {
-	err := db.C(collections.CHAT).Remove(bson.M{
+func dropChat(id int64) {
+	store, cancel := datastore.Get()
+	defer cancel()
+
+	_, err := store.DB().Collection(collections.CHAT).DeleteOne(store.Context, bson.M{
 		"chatid": id,
 	})
 	utils.LogError(err)
-	err = db.C(collections.APPS).Remove(bson.M{
+
+	_, err = store.DB().Collection(collections.APPS).DeleteOne(store.Context, bson.M{
 		"chatid": id,
 	})
 	utils.LogError(err)
 }
 
-func logMessage(db *mgo.Database, update tgbotapi.Update) {
-	err := db.C(collections.MESSAGE_LOG).Insert(update)
+func logMessage(update tgbotapi.Update) {
+	store, cancel := datastore.Get()
+	defer cancel()
+
+	_, err := store.DB().Collection(collections.MESSAGE_LOG).InsertOne(store.Context, update)
 	utils.LogError(err)
 }
 
-func runHandlers(update tgbotapi.Update, respChannel chan tgbotapi.Chattable, db *mgo.Database, bot *tgbotapi.BotAPI, appChanges chan int) {
+func runHandlers(update tgbotapi.Update, respChannel chan tgbotapi.Chattable, bot *tgbotapi.BotAPI, appChanges chan int) {
+	store, cancel := datastore.Get()
+	defer cancel()
+
 	//noinspection GoStructInitializationWithoutFieldNames
-	c := handlers.Context{update, respChannel, appChanges, db, bot}
+	c := handlers.Context{update, respChannel, appChanges, store, bot}
 	defer func() {
 		if r := recover(); r != nil {
 			bugsnag.Notify(utils.MakeError(r))
-			logMessage(db, update)
+			logMessage(update)
 			log.Printf("Panic in handler: %s %s\n%s", reflect.TypeOf(r), r, debug.Stack())
 			chatId := c.SafeChatId()
 			if chatId != 0 {
@@ -125,28 +148,59 @@ func runHandlers(update tgbotapi.Update, respChannel chan tgbotapi.Chattable, db
 	for _, h := range Handlers {
 		if h.Handle(c) {
 			log.Printf("Handled by %s", h.Name())
-			break
+			return
 		}
 	}
 }
 
-func initDb(db *mgo.Database) {
-	chatIndex := mgo.Index{
-		Key:        []string{"chatid", "userid"},
-		Unique:     true,
-		DropDups:   true,
-		Background: true,
-	}
-	db.C(collections.CHAT).EnsureIndex(chatIndex)
+func observe(
+	os string,
+	respChannel chan tgbotapi.Chattable,
+	appCollectionUpdate chan int,
+	reschedule func([]handlers.Application, chan tgbotapi.Chattable)) {
 
-	appIndex := mgo.Index{
-		Key:        []string{"packagename", "chatid", "userid"},
-		Unique:     true,
-		DropDups:   true,
-		Background: true,
-	}
+	defer bugsnag.AutoNotify()
+	for range appCollectionUpdate {
+		log.Printf("Got app update")
 
-	db.C(collections.APPS).EnsureIndex(appIndex)
+		store, cancel := datastore.Get()
+		defer cancel()
+
+		findQuery := bson.M{
+			"os": os,
+			"chatid": bson.M{
+				"$exists": true,
+			},
+		}
+		if os == "android" {
+			findQuery["keyfile"] = bson.M{
+				"$exists": true,
+			}
+		}
+		if os == "ios" {
+			findQuery["appStoreCountryCode"] = bson.M{
+				"$exists": true,
+			}
+		}
+		c, err := store.DB().Collection(collections.APPS).Find(store.Context, findQuery)
+
+		utils.PanicOnError(err)
+
+		var apps []handlers.Application
+		err = c.All(store.Context, &apps)
+		utils.PanicOnError(err)
+
+		reschedule(apps, respChannel)
+	}
+}
+
+type AppObserver interface {
+	Observe(respChannel chan tgbotapi.Chattable, appCollectionUpdate chan int)
+}
+
+var observers = []AppObserver{
+	AndroidAppObserver{},
+	IosAppObserver{},
 }
 
 func main() {
@@ -162,24 +216,26 @@ func main() {
 		ReleaseStage:    bugsnagStage,
 	})
 
-	mongoHost := os.Getenv("MONGO_HOST")
-	session, err := mgo.Dial(mongoHost)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("Connection succesfull!\n")
-
-	db := session.DB("review-bot")
-	fmt.Printf("Got db %s\n", db.Name)
-
-	//db.DropDatabase()
-	initDb(db)
-
 	respChannel := make(chan tgbotapi.Chattable, 5)
 	appChanges := make(chan int, 5)
-	go observeApps(db, respChannel, appChanges)
+
+	observerChannels := []chan int{}
+
+	for _, observer := range observers {
+		appChanges := make(chan int, 5)
+		observerChannels = append(observerChannels, appChanges)
+		go observer.Observe(respChannel, appChanges)
+	}
+
+	go func() {
+		for n := range appChanges {
+			for _, c := range observerChannels {
+				c <- n
+			}
+		}
+	}()
+
 	appChanges <- 0
 
-	runBot(db, respChannel, appChanges)
+	runBot(respChannel, appChanges)
 }

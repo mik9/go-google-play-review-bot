@@ -1,10 +1,12 @@
 package utils
 
 import (
-	"log"
-	"github.com/bugsnag/bugsnag-go"
+	"encoding/json"
 	"fmt"
+	"log"
 	"reflect"
+
+	"github.com/bugsnag/bugsnag-go"
 )
 
 func LogError(err error) {
@@ -27,6 +29,15 @@ func MakeError(v interface{}) error {
 
 func LogStruct(s interface{}) {
 	if s != nil {
-		log.Printf("%+v", s)
+		b, _ := json.Marshal(s)
+		log.Println(string(b))
+	}
+}
+
+func PanicOnError(err error) {
+	if err != nil {
+		bugsnag.Notify(err)
+		log.Printf("ERROR: %s", err.Error())
+		panic(err)
 	}
 }

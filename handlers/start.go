@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"google-play-review-bot/utils"
 	"strings"
-	"github.com/globalsign/mgo/bson"
-	"gopkg.in/telegram-bot-api.v4"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 type StartHandler struct {
@@ -17,7 +19,8 @@ func (StartHandler) Handle(ctx Context) bool {
 
 	chunks := strings.Split(ctx.Update.Message.Text, " ")
 	if len(chunks) > 1 {
-		id := bson.ObjectIdHex(chunks[1])
+		id, err := primitive.ObjectIDFromHex(chunks[1])
+		utils.PanicOnError(err)
 
 		ctx.BindAppToChatId(id, ctx.ChatId())
 	} else {

@@ -1,0 +1,20 @@
+version: "2"
+services:
+  db:
+    image: mongo
+    volumes:
+      - ./db:/data/db
+    ports:
+      - 0.0.0.0:27017:27017
+  
+  mongo-express:
+    image: mongo-express
+    environment:
+      ME_CONFIG_MONGODB_SERVER: db
+    ports:
+      - 0.0.0.0:8081:8081
+
+  bot:
+    image: registry.d.mik.pl.ua/google_review_bot
+    build: 
+      context: .

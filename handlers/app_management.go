@@ -1,13 +1,17 @@
 package handlers
 
 import (
-	"google-play-review-bot/collections"
-	"github.com/globalsign/mgo/bson"
-	"gopkg.in/telegram-bot-api.v4"
 	"fmt"
+	"google-play-review-bot/collections"
+	"google-play-review-bot/utils"
 	"log"
-	"time"
 	"strings"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	tgbotapi "gopkg.in/telegram-bot-api.v4"
 )
 
 type AppList struct {
@@ -20,9 +24,14 @@ func (AppList) Handle(ctx Context) bool {
 	}
 
 	var apps []struct{ PackageName string }
-	ctx.Db.C(collections.APPS).Find(bson.M{
+	c, err := ctx.Store.DB().Collection(collections.APPS).Find(ctx.Store.Context, bson.M{
 		"userid": ctx.UserId(),
-	}).Select(bson.M{"packagename": 1}).All(&apps)
+	}, options.Find().SetProjection(bson.M{"packagename": 1}))
+
+	utils.PanicOnError(err)
+
+	err = c.All(ctx.Store.Context, &apps)
+	utils.PanicOnError(err)
 
 	var resp string
 	if len(apps) == 0 {
@@ -75,10 +84,14 @@ func (ChangeLanguage) Name() string {
 
 func makeAppChooser(ctx Context) *tgbotapi.Chattable {
 	var apps []Application
-	ctx.Db.C(collections.APPS).Find(bson.M{
+	c, err := ctx.Store.DB().Collection(collections.APPS).Find(ctx.Store.Context, bson.M{
 		"userid": ctx.UserId(),
-	}).All(&apps)
-	
+	})
+	utils.PanicOnError(err)
+
+	err = c.All(ctx.Store.Context, &apps)
+	utils.PanicOnError(err)
+
 	if len(apps) == 0 {
 		return nil
 	}
@@ -110,17 +123,19 @@ func (ChangeLanguageReceiver) Handle(ctx Context) bool {
 
 	language := ctx.Update.Message.Text
 
-	err := ctx.Db.C(collections.APPS).UpdateId(chat.CustomData, bson.M{
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{"_id": chat.CustomData}, bson.M{
 		"$set": bson.M{
 			"translatelanguage": language,
 			"lastreview":        time.Time{},
 		},
+		"$unset": bson.M{
+			"lastreviewid": 1,
+		},
 	})
-	if err != nil {
-		panic(err)
-	}
+	utils.PanicOnError(err)
 
-	ctx.ChangeChatStateWithNextState(ChatStateNone, ChatStateNone)
+	err = ctx.ChangeChatStateWithNextState(ChatStateNone, ChatStateNone)
+	utils.PanicOnError(err)
 
 	ctx.Resp <- tgbotapi.NewMessage(ctx.ChatId(), "Language changed")
 	ctx.AppChanges <- 1
@@ -134,16 +149,17 @@ func (ChangeLanguageReceiver) Name() string {
 
 type ChooseAppReceiver struct {
 	Handler
+	BotUserName string
 }
 
-func (ChooseAppReceiver) Handle(ctx Context) bool {
+func (c ChooseAppReceiver) Handle(ctx Context) bool {
 	stateOk, chat := ctx.EnsureChatState(ChatStateWaitForApp)
 	if !stateOk || ctx.Update.CallbackQuery == nil {
 		return false
 	}
 
 	id := ctx.Update.CallbackQuery.Data
-	nextState := chat.CustomData.(int)
+	nextState := int(chat.CustomData.(int32))
 
 	if nextState >= 0 {
 		ctx.Resp <- tgbotapi.NewMessage(ctx.ChatId(), fmt.Sprintf("Please provide %s", ChatStateToWaitingString(nextState)))
@@ -155,20 +171,22 @@ func (ChooseAppReceiver) Handle(ctx Context) bool {
 		nextState = ChatStateNone
 	}
 
-	err := ctx.Db.C(collections.CHAT).Update(bson.M{
+	objectID, err := primitive.ObjectIDFromHex(id)
+	utils.PanicOnError(err)
+
+	_, err = ctx.Store.DB().Collection(collections.CHAT).UpdateOne(ctx.Store.Context, bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
 	}, bson.M{
 		"$set": bson.M{
-			"customdata": bson.ObjectIdHex(id),
+			"customdata": objectID,
 			"state":      nextState,
 		},
 	})
-	if err != nil {
-		panic(err)
-	}
+	utils.PanicOnError(err)
+
 	if stateCall != 0 {
-		ChatStateCall(stateCall, ctx)
+		ChatStateCall(stateCall, c.BotUserName, ctx)
 	}
 
 	return true
@@ -220,15 +238,16 @@ func (ChangeAppNameReceiver) Handle(ctx Context) bool {
 
 	name := ctx.Update.Message.Text
 
-	err := ctx.Db.C(collections.APPS).UpdateId(chat.CustomData, bson.M{
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{"_id": chat.CustomData}, bson.M{
 		"$set": bson.M{
 			"name":       name,
 			"lastreview": time.Time{},
 		},
+		"$unset": bson.M{
+			"lastreviewid": 1,
+		},
 	})
-	if err != nil {
-		panic(err)
-	}
+	utils.PanicOnError(err)
 
 	ctx.ChangeChatStateWithNextState(ChatStateNone, ChatStateNone)
 
@@ -274,27 +293,30 @@ func (ChangeGroup) Name() string {
 
 type ChangeGroupReceiver struct {
 	Handler
+	BotUserName string
 }
 
-func (ChangeGroupReceiver) Handle(ctx Context) bool {
+func (c ChangeGroupReceiver) Handle(ctx Context) bool {
 	log.Printf("ChangeGroupReceiver")
 	var chat Chat
 	chatSelector := bson.M{
 		"chatid": ctx.ChatId(),
 		"userid": ctx.UserId(),
 	}
-	ctx.Db.C(collections.CHAT).Find(chatSelector).One(&chat)
+	err := ctx.Store.DB().Collection(collections.CHAT).FindOne(ctx.Store.Context, chatSelector).Decode(&chat)
+	utils.PanicOnError(err)
 
-	id := chat.CustomData.(bson.ObjectId)
+	id := chat.CustomData.(primitive.ObjectID)
 	ctx.Resp <- tgbotapi.NewMessage(ctx.ChatId(), "Great, check private chat for further instructions.")
 	ctx.Resp <- tgbotapi.NewMessage(int64(ctx.UserId()),
-		"Use next lint to add me to desired group: https://telegram.me/google_play_review_bot?startgroup="+id.Hex()+"\n Or leave it here: /private_"+id.Hex())
+		"Use next lint to add me to desired group: https://telegram.me/"+c.BotUserName+"?startgroup="+id.Hex()+"\n Or leave it here: /private_"+id.Hex())
 
-	ctx.Db.C(collections.APPS).UpdateId(id, bson.M{
+	_, err = ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{"_id": id}, bson.M{
 		"$unset": bson.M{
 			"chatid": 1,
 		},
 	})
+	utils.PanicOnError(err)
 	ctx.ChangeChatState(ChatStateNone)
 
 	ctx.AppChanges <- 1
@@ -316,12 +338,79 @@ func (ChangeGroupPrivateReceiver) Handle(ctx Context) bool {
 	}
 
 	appId := strings.Split(ctx.Update.Message.Text, "_")[1]
+	appObjectID, err := primitive.ObjectIDFromHex(appId)
+	utils.PanicOnError(err)
 
-	ctx.BindAppToChatId(bson.ObjectIdHex(appId), int64(ctx.UserId()))
+	ctx.BindAppToChatId(appObjectID, int64(ctx.UserId()))
 
 	return true
 }
 
 func (ChangeGroupPrivateReceiver) Name() string {
 	return "ChangeGroupPrivateReceiver"
+}
+
+type ChangeAppStore struct {
+	Handler
+}
+
+func (ChangeAppStore) Handle(ctx Context) bool {
+	if !ctx.EnsureCommand("/changeappstore") {
+		return false
+	}
+
+	chattable := makeAppChooser(ctx)
+	if chattable == nil {
+		ctx.Resp <- tgbotapi.NewMessage(ctx.ChatId(), "No apps to change")
+		return true
+	}
+
+	if !ctx.ChangeChatStateWithNextStateOrAnswerDefault(ChatStateWaitForApp, ChangeAppStoreWaitForCode) {
+		return false
+	}
+
+	if chattable != nil {
+		ctx.Resp <- *chattable
+	}
+
+	return true
+}
+
+func (ChangeAppStore) Name() string {
+	return "ChangeAppStore"
+}
+
+type ChangeAppStoreReceiver struct {
+	Handler
+}
+
+func (ChangeAppStoreReceiver) Handle(ctx Context) bool {
+	stateOk, chat := ctx.EnsureChatState(ChangeAppStoreWaitForCode)
+	if !stateOk {
+		return false
+	}
+
+	code := ctx.Update.Message.Text
+
+	_, err := ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{"_id": chat.CustomData}, bson.M{
+		"$set": bson.M{
+			"appStoreCountryCode": code,
+			"lastreview":          time.Time{},
+		},
+		"$unset": bson.M{
+			"lastreviewid": 1,
+		},
+	})
+	utils.PanicOnError(err)
+
+	ctx.ChangeChatStateWithNextState(ChatStateNone, ChatStateNone)
+
+	ctx.Resp <- tgbotapi.NewMessage(ctx.ChatId(), "App store code changed")
+	ctx.AppChanges <- 1
+
+	return true
+}
+
+func (ChangeAppStoreReceiver) Name() string {
+	return "ChangeAppNameReceiver"
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"google-play-review-bot/collections"
+	"google-play-review-bot/datastore"
 	"google-play-review-bot/handlers"
 	"google-play-review-bot/scheduler"
 	"google-play-review-bot/utils"
@@ -11,8 +12,7 @@ import (
 	"time"
 
 	"github.com/bugsnag/bugsnag-go"
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/androidpublisher/v3"
@@ -34,14 +34,23 @@ type userReview struct {
 func (r userReview) format() string {
 	var buffer bytes.Buffer
 
-	timeFormatted := r.Time.Format("2006-01-02 15:04")
+	var header string
+	if r.Time.IsZero() {
+		header = fmt.Sprintf("%s %s\n",
+			r.AppName,
+			r.AppVersion,
+		)
+	} else {
+		timeFormatted := r.Time.Format("2006-01-02 15:04")
 
-	header := fmt.Sprintf("%s %s (%d) at %s\n",
-		r.AppName,
-		r.AppVersion,
-		r.AppBuildNumber,
-		timeFormatted,
-	)
+		header = fmt.Sprintf("%s %s (%d) at %s\n",
+			r.AppName,
+			r.AppVersion,
+			r.AppBuildNumber,
+			timeFormatted,
+		)
+	}
+
 	buffer.WriteString(header)
 
 	if len(r.UserName) > 0 {
@@ -49,20 +58,30 @@ func (r userReview) format() string {
 		buffer.WriteString("\n")
 	}
 
-	if len(r.Device) > 0 {
+	if r.Device != "" {
 		buffer.WriteString("Device: ")
 		buffer.WriteString(r.Device)
 	}
-	buffer.WriteString(" on Android ")
-	buffer.WriteString(sdkIntToString(r.SdkInt))
-	buffer.WriteString("\n")
+	if r.SdkInt > 0 {
+		buffer.WriteString(" on Android ")
+		buffer.WriteString(sdkIntToString(r.SdkInt))
+	}
+	if r.Device != "" || r.SdkInt > 0 {
+		buffer.WriteString("\n")
+	}
+
+	hearticon := "💔"
+	if r.Rating > 3 {
+		hearticon = "❤️"
+	}
 
 	for i := 1; i <= r.Rating; i++ {
-		buffer.WriteString("⭐️")
+		buffer.WriteString(hearticon)
 	}
-	for i := r.Rating; i < 5; i++ {
-		buffer.WriteString("☆")
-	}
+
+	// for i := r.Rating; i < 5; i++ {
+	// 	buffer.WriteString("☆")
+	// }
 
 	if len(r.Text) > 0 {
 		buffer.WriteString("\n")
@@ -111,17 +130,28 @@ func sdkIntToString(sdkInt int) string {
 	}
 }
 
-func requestReviews(db *mgo.Database, app handlers.Application, respChannel chan tgbotapi.Chattable) {
+type AndroidAppObserver struct {
+	scheduler *scheduler.Scheduler
+}
+
+var _ AppObserver = (*AndroidAppObserver)(nil)
+
+func (a AndroidAppObserver) Observe(respChannel chan tgbotapi.Chattable, appCollectionUpdate chan int) {
+	a.scheduler = scheduler.NewScheduler()
+	observe("android", respChannel, appCollectionUpdate, a.rescheduleAndroid)
+}
+
+func (a AndroidAppObserver) requestReviews(app handlers.Application, respChannel chan tgbotapi.Chattable) {
 	defer bugsnag.AutoNotify()
 	log.Printf("[%s] requestReviews", app.PackageName)
 
-	err := db.C(collections.APPS).FindId(app.ID).One(&app)
-	if err != nil {
-		utils.LogError(err)
-		return
-	}
+	datastore.Use(func(store *datastore.Datastore) {
+		err := store.DB().Collection(collections.APPS).FindOne(store.Context, bson.M{"_id": app.ID}).Decode(&app)
+		utils.PanicOnError(err)
+	})
 
-	jsonKey, _ := google.JWTConfigFromJSON(app.KeyFile, androidpublisher.AndroidpublisherScope)
+	jsonKey, err := google.JWTConfigFromJSON(app.KeyFile, androidpublisher.AndroidpublisherScope)
+	utils.PanicOnError(err)
 
 	client := jsonKey.Client(context.Background())
 	service, err := androidpublisher.New(client)
@@ -137,7 +167,7 @@ func requestReviews(db *mgo.Database, app handlers.Application, respChannel chan
 	var newestReviewTime time.Time
 	for i := 0; doNext && len(nextPageToken) > 0 && i < pageLimit; i++ {
 		var newsetTimeOnPage *time.Time
-		doNext, err, newsetTimeOnPage, nextPageToken = handlePage(reviewService, nextPageToken, app, respChannel)
+		doNext, newsetTimeOnPage, nextPageToken, err = a.handlePage(reviewService, nextPageToken, app, respChannel)
 		if err != nil {
 			utils.LogError(err)
 			return
@@ -154,16 +184,21 @@ func requestReviews(db *mgo.Database, app handlers.Application, respChannel chan
 		updateFields["lastreview"] = newestReviewTime
 	}
 
-	err = db.C(collections.APPS).UpdateId(app.ID, bson.M{
-		"$set": updateFields,
+	datastore.Use(func(store *datastore.Datastore) {
+		u, err := store.DB().Collection(collections.APPS).UpdateOne(store.Context, bson.M{"_id": app.ID}, bson.M{
+			"$set": updateFields,
+		})
+		if err == nil && u.MatchedCount == 0 {
+			utils.LogError(fmt.Errorf("Not updated app"))
+		}
+		utils.LogError(err)
 	})
-	utils.LogError(err)
 }
 
-func handlePage(reviewService *androidpublisher.ReviewsService,
+func (a AndroidAppObserver) handlePage(reviewService *androidpublisher.ReviewsService,
 	token string,
 	app handlers.Application,
-	respChannel chan tgbotapi.Chattable) (bool, error, *time.Time, string) {
+	respChannel chan tgbotapi.Chattable) (bool, *time.Time, string, error) {
 
 	log.Printf("handlePage [%s]", app.PackageName)
 
@@ -175,7 +210,7 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 
 	reviewList, err := reviewListCall.Do()
 	if err != nil {
-		return false, err, nil, ""
+		return false, nil, "", err
 	}
 	log.Printf("handlePage [%s] review count: %d", app.PackageName, len(reviewList.Reviews))
 	var newestReview time.Time
@@ -185,7 +220,7 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 
 		if reviewTime.Before(app.LastReview) || reviewTime.Equal(app.LastReview) {
 			log.Printf("handlePage [%s]: Review is older that last time", app.PackageName)
-			return false, nil, &newestReview, ""
+			return false, &newestReview, "", nil
 		}
 
 		if reviewTime.After(newestReview) {
@@ -194,10 +229,10 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 
 		if app.LastReview.IsZero() && i > 0 {
 			log.Printf("handlePage [%s] No reviewTime, allow only one review", app.PackageName)
-			return false, nil, &newestReview, ""
+			return false, &newestReview, "", nil
 		}
 
-		handleSingleComment(app, r, c, respChannel)
+		a.handleSingleComment(app, r, c, respChannel)
 	}
 
 	var nextToken string
@@ -206,10 +241,10 @@ func handlePage(reviewService *androidpublisher.ReviewsService,
 	} else {
 		nextToken = ""
 	}
-	return true, nil, &newestReview, nextToken
+	return true, &newestReview, nextToken, nil
 }
 
-func handleSingleComment(app handlers.Application,
+func (a AndroidAppObserver) handleSingleComment(app handlers.Application,
 	r *androidpublisher.Review,
 	c *androidpublisher.UserComment,
 	respChannel chan tgbotapi.Chattable) {
@@ -233,34 +268,17 @@ func handleSingleComment(app handlers.Application,
 		AppName:        app.GetName(),
 	}
 
+	log.Printf("[Android] Sending message to %d", app.ChatId)
 	respChannel <- tgbotapi.NewMessage(app.ChatId, review.format())
 }
 
-func observeApps(db *mgo.Database, respChannel chan tgbotapi.Chattable, appCollectionUpdate chan int) {
-	defer bugsnag.AutoNotify()
-	for range appCollectionUpdate {
-		log.Printf("Got update")
-		var apps []handlers.Application
-		db.C(collections.APPS).Find(bson.M{
-			"keyfile": bson.M{
-				"$exists": true,
-			},
-			"chatid": bson.M{
-				"$exists": true,
-			},
-		}).All(&apps)
-		reschedule(db, apps, respChannel)
-	}
-}
-
-var _scheduler = scheduler.NewScheduler()
-
-func reschedule(db *mgo.Database, apps []handlers.Application, respChannel chan tgbotapi.Chattable) {
-	_scheduler.Clear()
+func (a AndroidAppObserver) rescheduleAndroid(apps []handlers.Application, respChannel chan tgbotapi.Chattable) {
+	a.scheduler.Clear()
+	log.Printf("[Android] Scheduling %d apps", len(apps))
 	for _, app := range apps {
 		_app := app
-		_scheduler.Schedule(func() {
-			requestReviews(db, _app, respChannel)
+		a.scheduler.Schedule(func() {
+			a.requestReviews(_app, respChannel)
 		}, 10*time.Minute)
 	}
 }
