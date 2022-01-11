@@ -93,6 +93,10 @@ func (r userReview) format() string {
 
 func sdkIntToString(sdkInt int) string {
 	switch sdkInt {
+	case 31:
+		return "12"
+	case 30:
+		return "11"
 	case 29:
 		return "10"
 	case 28:
