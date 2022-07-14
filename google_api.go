@@ -9,6 +9,7 @@ import (
 	"google-play-review-bot/scheduler"
 	"google-play-review-bot/utils"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/bugsnag/bugsnag-go"
@@ -85,7 +86,7 @@ func (r userReview) format() string {
 
 	if len(r.Text) > 0 {
 		buffer.WriteString("\n")
-		buffer.WriteString(r.Text)
+		buffer.WriteString(strings.TrimSpace(r.Text))
 	}
 
 	return buffer.String()
