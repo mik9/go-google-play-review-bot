@@ -18,6 +18,7 @@ import (
 )
 
 var BotToken = os.Getenv("TELEGRAM_TOKEN")
+var Debug = os.Getenv("DEBUG") != ""
 
 var Handlers []handlers.Handler
 
@@ -92,7 +93,9 @@ func runBot(respChannel chan tgbotapi.Chattable, appChanges chan int) {
 	for {
 		select {
 		case update := <-updateChannel:
-			go logMessage(update)
+			if Debug {
+				go logMessage(update)
+			}
 			go runHandlers(update, respChannel, bot, appChanges)
 		case resp := <-respChannel:
 			_, e := bot.Send(resp)
