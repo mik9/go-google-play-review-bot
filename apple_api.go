@@ -74,7 +74,9 @@ func (i IosAppObserver) requestReviews(app handlers.Application, respChannel cha
 	})
 
 	url := fmt.Sprintf("https://itunes.apple.com/%s/rss/customerreviews/id=%s/sortBy=mostRecent/json", app.AppStoreCountryCode, app.PackageName)
-	log.Printf("[iOS] %s", url)
+	if Debug {
+		log.Printf("[iOS] %s", url)
+	}
 
 	resp, err := http.Get(url)
 	utils.PanicOnError(err)
@@ -91,7 +93,9 @@ func (i IosAppObserver) requestReviews(app handlers.Application, respChannel cha
 	err = json.NewDecoder(resp.Body).Decode(&rss)
 	utils.PanicOnError(err)
 
-	utils.LogStruct(rss)
+	if Debug {
+		utils.LogStruct(rss)
+	}
 
 	processedReviewID := ""
 	if app.LastReviewId != "" {

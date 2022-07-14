@@ -216,6 +216,9 @@ func (a AndroidAppObserver) handlePage(reviewService *androidpublisher.ReviewsSe
 	if err != nil {
 		return false, nil, "", err
 	}
+	if Debug {
+		utils.LogStruct(reviewList)
+	}
 	log.Printf("handlePage [%s] review count: %d", app.PackageName, len(reviewList.Reviews))
 	var newestReview time.Time
 	for i, r := range reviewList.Reviews {
