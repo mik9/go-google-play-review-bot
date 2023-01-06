@@ -65,7 +65,7 @@ type IosAppObserver struct {
 var _ AppObserver = (*IosAppObserver)(nil)
 
 func (i IosAppObserver) requestReviews(app handlers.Application, respChannel chan tgbotapi.Chattable) {
-	log.Printf("[iOS] requestReviews")
+	log.Printf("[iOS] requestReviews [%s]", app.Name)
 	bugsnag.AutoNotify()
 
 	datastore.Use(func(store *datastore.Datastore) {
