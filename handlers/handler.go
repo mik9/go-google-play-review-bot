@@ -178,7 +178,7 @@ func (ctx Context) SetKeyFile(buf []byte) {
 }
 
 func (ctx Context) MigrateChatId(oldId int64, newId int64) {
-	_, err := ctx.Store.DB().Collection(collections.CHAT).UpdateOne(ctx.Store.Context, bson.M{
+	_, err := ctx.Store.DB().Collection(collections.CHAT).UpdateMany(ctx.Store.Context, bson.M{
 		"chatid": oldId,
 	}, bson.M{
 		"$set": bson.M{
@@ -189,7 +189,7 @@ func (ctx Context) MigrateChatId(oldId int64, newId int64) {
 		utils.LogError(err)
 	}
 
-	_, err = ctx.Store.DB().Collection(collections.APPS).UpdateOne(ctx.Store.Context, bson.M{
+	_, err = ctx.Store.DB().Collection(collections.APPS).UpdateMany(ctx.Store.Context, bson.M{
 		"chatid": oldId,
 	}, bson.M{
 		"$set": bson.M{
