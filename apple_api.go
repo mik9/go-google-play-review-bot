@@ -79,19 +79,19 @@ func (i IosAppObserver) requestReviews(app handlers.Application, respChannel cha
 	}
 
 	resp, err := http.Get(url)
-	utils.PanicOnError(err)
+	utils.LogError(err)
 
 	if resp.StatusCode != http.StatusOK {
 		body, err := ioutil.ReadAll(resp.Body)
 		utils.PanicOnError(err)
 
-		utils.PanicOnError(fmt.Errorf("Got error: %s\n%s", resp.Status, string(body)))
+		utils.LogError(fmt.Errorf("Got error: %s\n%s", resp.Status, string(body)))
 		return
 	}
 
 	rss := rss{}
 	err = json.NewDecoder(resp.Body).Decode(&rss)
-	utils.PanicOnError(err)
+	utils.LogError(err)
 
 	if Debug {
 		utils.LogStruct(rss)
