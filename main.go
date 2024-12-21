@@ -184,6 +184,9 @@ func observe(
 			findQuery["appStoreCountryCode"] = bson.M{
 				"$exists": true,
 			}
+			findQuery["packagename"] = bson.M{
+				"$exists": true,
+			}
 		}
 		c, err := store.DB().Collection(collections.APPS).Find(store.Context, findQuery)
 
