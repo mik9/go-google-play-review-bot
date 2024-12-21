@@ -65,8 +65,8 @@ type IosAppObserver struct {
 var _ AppObserver = (*IosAppObserver)(nil)
 
 func (i IosAppObserver) requestReviews(app handlers.Application, respChannel chan tgbotapi.Chattable) {
-	log.Printf("[iOS, %s] requestReviews", app.Name)
-	bugsnag.AutoNotify()
+	log.Printf("[iOS, %s, %s, %s] requestReviews", app.Name, app.ID.Hex(), app.PackageName)
+	defer bugsnag.AutoNotify(bugsnag.MetaData{"app": {"id": app.ID.Hex(), "packageName": app.PackageName}})
 
 	datastore.Use(func(store *datastore.Datastore) {
 		err := store.DB().Collection(collections.APPS).FindOne(store.Context, bson.M{"_id": app.ID}).Decode(&app)

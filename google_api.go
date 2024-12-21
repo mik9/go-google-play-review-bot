@@ -153,7 +153,7 @@ func (a AndroidAppObserver) Observe(respChannel chan tgbotapi.Chattable, appColl
 }
 
 func (a AndroidAppObserver) requestReviews(app handlers.Application, respChannel chan tgbotapi.Chattable) {
-	defer bugsnag.AutoNotify()
+	defer bugsnag.AutoNotify(bugsnag.MetaData{"app": {"id": app.ID.Hex(), "packageName": app.PackageName}})
 	log.Printf("[%s] requestReviews", app.PackageName)
 
 	datastore.Use(func(store *datastore.Datastore) {
